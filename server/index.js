@@ -55,10 +55,7 @@ app.post('/api/chat', async (req, res) => {
     if (!upstream.ok || !upstream.body) {
       const details = await upstream.text().catch(() => '');
       console.error('Qwen upstream error:', upstream.status, details);
-      return res.status(502).json({
-        error: 'Qwen server unavailable',
-        status: upstream.status,
-      });
+      return res.status(502).json({ error: 'Qwen server unavailable', status: upstream.status });
     }
 
     res.status(200);
@@ -70,23 +67,26 @@ app.post('/api/chat', async (req, res) => {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    const consume = (text) => {
+    const consume = (text, flush = false) => {
       buffer += text;
       const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
+      if (flush) {
+        buffer = '';
+      } else {
+        buffer = lines.pop() || '';
+      }
 
       for (const rawLine of lines) {
         const line = rawLine.trim();
         if (!line.startsWith('data:')) continue;
         const payload = line.slice(5).trim();
         if (!payload || payload === '[DONE]') continue;
-
         try {
           const parsed = JSON.parse(payload);
           const token = parsed?.choices?.[0]?.delta?.content;
           if (typeof token === 'string' && token) res.write(token);
         } catch {
-          // Ignore malformed/incomplete SSE events and continue the stream.
+          // Ignore malformed SSE events and continue streaming.
         }
       }
     };
@@ -96,15 +96,12 @@ app.post('/api/chat', async (req, res) => {
       if (done) break;
       consume(decoder.decode(value, { stream: true }));
     }
-    consume(decoder.decode());
+    consume(`${buffer}${decoder.decode()}\n`, true);
     res.end();
   } catch (error) {
     console.error('DarkGPT backend error:', error);
-    if (!res.headersSent) {
-      res.status(502).json({ error: 'Unable to reach Qwen3.8-27B' });
-    } else {
-      res.end();
-    }
+    if (!res.headersSent) res.status(502).json({ error: 'Unable to reach Qwen3.8-27B' });
+    else res.end();
   }
 });
 
@@ -114,7 +111,7 @@ const distPath = path.resolve(__dirname, '../dist');
 
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
-  app.get('*', (req, res, next) => {
+  app.use((req, res, next) => {
     if (req.path.startsWith('/api/')) return next();
     res.sendFile(path.join(distPath, 'index.html'));
   });
