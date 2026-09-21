@@ -67,14 +67,10 @@ app.post('/api/chat', async (req, res) => {
     const decoder = new TextDecoder();
     let buffer = '';
 
-    const consume = (text, flush = false) => {
+    const consume = (text) => {
       buffer += text;
       const lines = buffer.split('\n');
-      if (flush) {
-        buffer = '';
-      } else {
-        buffer = lines.pop() || '';
-      }
+      buffer = lines.pop() || '';
 
       for (const rawLine of lines) {
         const line = rawLine.trim();
@@ -96,7 +92,10 @@ app.post('/api/chat', async (req, res) => {
       if (done) break;
       consume(decoder.decode(value, { stream: true }));
     }
-    consume(`${buffer}${decoder.decode()}\n`, true);
+
+    const tail = buffer + decoder.decode();
+    buffer = '';
+    if (tail.trim()) consume(`${tail}\n`);
     res.end();
   } catch (error) {
     console.error('DarkGPT backend error:', error);
