@@ -1,55 +1,14 @@
 # DarkGPT + Qwen3.8-27B
 
-DarkGPT usa **Qwen/Qwen3.8-27B** come modello linguistico tramite un'API compatibile OpenAI.
+DarkGPT usa **Qwen3.8-27B** come modello linguistico tramite l'API OpenAI-compatible di **Groq**.
 
-## Configurazione consigliata per iniziare
+Questa è la configurazione predefinita perché non richiede di noleggiare una GPU. Groq applica i limiti del proprio free tier, quindi l'uso gratuito non è illimitato.
 
-Per un primo deployment pratico usa **1× A100 80 GB** con contesto iniziale a **32.768 token**.
-Il modello resta Qwen3.8-27B completo: viene ridotta soltanto la lunghezza massima della conversazione caricata in VRAM.
+## 1. Crea una Groq API key
 
-Per RunPod trovi la guida completa in [`RUNPOD_SETUP.md`](./RUNPOD_SETUP.md) e lo script pronto in [`deploy/runpod/start-qwen.sh`](./deploy/runpod/start-qwen.sh).
+Crea una chiave nel tuo account Groq e non inserirla mai nel frontend o nei file GitHub.
 
-## Avvio locale / server GPU
-
-Installa una versione recente di vLLM e avvia:
-
-```bash
-export VLLM_API_KEY="scegli-una-chiave-lunga-e-casuale"
-
-vllm serve Qwen/Qwen3.8-27B \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --tensor-parallel-size 1 \
-  --max-model-len 32768 \
-  --gpu-memory-utilization 0.92 \
-  --max-num-seqs 8 \
-  --reasoning-parser qwen3 \
-  --enable-auto-tool-choice \
-  --tool-call-parser qwen3_coder \
-  --api-key "$VLLM_API_KEY"
-```
-
-Questo espone un endpoint OpenAI-compatible:
-
-```text
-http://127.0.0.1:8000/v1
-```
-
-### Contesto completo ufficiale
-
-Qwen documenta anche questa configurazione per 4 GPU e contesto nativo da 262.144 token:
-
-```bash
-vllm serve Qwen/Qwen3.8-27B \
-  --port 8000 \
-  --tensor-parallel-size 4 \
-  --max-model-len 262144 \
-  --reasoning-parser qwen3 \
-  --enable-auto-tool-choice \
-  --tool-call-parser qwen3_coder
-```
-
-## Configura DarkGPT
+## 2. Configura DarkGPT
 
 Copia l'esempio:
 
@@ -57,18 +16,18 @@ Copia l'esempio:
 cp .env.example .env
 ```
 
-Configurazione locale:
+Configurazione:
 
 ```env
 PORT=3001
-QWEN_BASE_URL=http://127.0.0.1:8000/v1
-QWEN_MODEL=Qwen/Qwen3.8-27B
-QWEN_API_KEY=la-stessa-chiave-di-vLLM
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=qwen/qwen3.8-27b
+GROQ_API_KEY=la-tua-chiave-groq
 ```
 
-Se Qwen gira su RunPod o su un'altra macchina, sostituisci `QWEN_BASE_URL` con l'URL HTTPS del server di inferenza.
+Il backend Node usa l'endpoint `/chat/completions` e inoltra la risposta a DarkGPT in streaming. La API key resta soltanto sul server.
 
-## Avvia DarkGPT
+## 3. Avvia DarkGPT
 
 ```bash
 npm install
@@ -79,9 +38,8 @@ Questo avvia:
 
 - frontend Vite;
 - backend Node DarkGPT;
-- `/api/chat` come proxy streaming verso Qwen3.8-27B.
-
-Il browser non vede direttamente né l'endpoint Qwen né la relativa API key.
+- `/api/chat` come proxy streaming verso Groq;
+- Qwen3.8-27B come modello di risposta.
 
 ## Produzione
 
@@ -92,13 +50,18 @@ npm start
 
 Il backend Node serve sia il frontend compilato sia `/api/chat`.
 
-## Se compare un errore di memoria GPU
+## Railway
 
-Riduci prima il contesto:
+Nel servizio Railway configura queste variabili:
 
-```bash
-export QWEN_MAX_MODEL_LEN=16384
-export QWEN_GPU_MEMORY_UTILIZATION=0.90
+```env
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+GROQ_MODEL=qwen/qwen3.8-27b
+GROQ_API_KEY=la-tua-chiave-groq
 ```
 
-Poi riavvia il server Qwen. Non è necessario cambiare il frontend o il backend DarkGPT.
+Non salvare `GROQ_API_KEY` nella repository.
+
+## Provider self-hosted opzionale
+
+Il backend mantiene compatibilità anche con le vecchie variabili `QWEN_BASE_URL`, `QWEN_MODEL` e `QWEN_API_KEY`. Se in futuro vorrai tornare a vLLM/RunPod o a un server locale, non sarà necessario riscrivere il frontend.
