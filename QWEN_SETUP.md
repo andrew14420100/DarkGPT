@@ -1,10 +1,43 @@
 # DarkGPT + Qwen3.8-27B
 
-DarkGPT uses **Qwen/Qwen3.8-27B** as its language model through an OpenAI-compatible local API.
+DarkGPT usa **Qwen/Qwen3.8-27B** come modello linguistico tramite un'API compatibile OpenAI.
 
-## 1. Start Qwen3.8-27B
+## Configurazione consigliata per iniziare
 
-The official Qwen repository documents vLLM as an OpenAI-compatible server. Example:
+Per un primo deployment pratico usa **1× A100 80 GB** con contesto iniziale a **32.768 token**.
+Il modello resta Qwen3.8-27B completo: viene ridotta soltanto la lunghezza massima della conversazione caricata in VRAM.
+
+Per RunPod trovi la guida completa in [`RUNPOD_SETUP.md`](./RUNPOD_SETUP.md) e lo script pronto in [`deploy/runpod/start-qwen.sh`](./deploy/runpod/start-qwen.sh).
+
+## Avvio locale / server GPU
+
+Installa una versione recente di vLLM e avvia:
+
+```bash
+export VLLM_API_KEY="scegli-una-chiave-lunga-e-casuale"
+
+vllm serve Qwen/Qwen3.8-27B \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --tensor-parallel-size 1 \
+  --max-model-len 32768 \
+  --gpu-memory-utilization 0.92 \
+  --max-num-seqs 8 \
+  --reasoning-parser qwen3 \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
+  --api-key "$VLLM_API_KEY"
+```
+
+Questo espone un endpoint OpenAI-compatible:
+
+```text
+http://127.0.0.1:8000/v1
+```
+
+### Contesto completo ufficiale
+
+Qwen documenta anche questa configurazione per 4 GPU e contesto nativo da 262.144 token:
 
 ```bash
 vllm serve Qwen/Qwen3.8-27B \
@@ -16,60 +49,56 @@ vllm serve Qwen/Qwen3.8-27B \
   --tool-call-parser qwen3_coder
 ```
 
-This exposes:
+## Configura DarkGPT
 
-```text
-http://127.0.0.1:8000/v1
-```
-
-`--tensor-parallel-size` must match the GPU setup you actually use. If the available VRAM is lower, reduce the maximum context length or use a supported quantized deployment.
-
-## 2. Configure DarkGPT
-
-Copy the example environment file:
+Copia l'esempio:
 
 ```bash
 cp .env.example .env
 ```
 
-Default configuration:
+Configurazione locale:
 
 ```env
 PORT=3001
 QWEN_BASE_URL=http://127.0.0.1:8000/v1
 QWEN_MODEL=Qwen/Qwen3.8-27B
-QWEN_API_KEY=
+QWEN_API_KEY=la-stessa-chiave-di-vLLM
 ```
 
-If Qwen runs on another machine, replace `QWEN_BASE_URL` with the private URL of that inference server.
+Se Qwen gira su RunPod o su un'altra macchina, sostituisci `QWEN_BASE_URL` con l'URL HTTPS del server di inferenza.
 
-## 3. Start DarkGPT
+## Avvia DarkGPT
 
 ```bash
 npm install
 npm run dev
 ```
 
-This starts:
+Questo avvia:
 
-- Vite frontend
-- DarkGPT Node backend
-- `/api/chat` streaming proxy to Qwen3.8-27B
+- frontend Vite;
+- backend Node DarkGPT;
+- `/api/chat` come proxy streaming verso Qwen3.8-27B.
 
-The browser never needs direct access to the Qwen inference endpoint.
+Il browser non vede direttamente né l'endpoint Qwen né la relativa API key.
 
-## Production
-
-Build the frontend:
+## Produzione
 
 ```bash
 npm run build
-```
-
-Then run:
-
-```bash
 npm start
 ```
 
-The Node backend serves the compiled frontend and `/api/chat` from the same application.
+Il backend Node serve sia il frontend compilato sia `/api/chat`.
+
+## Se compare un errore di memoria GPU
+
+Riduci prima il contesto:
+
+```bash
+export QWEN_MAX_MODEL_LEN=16384
+export QWEN_GPU_MEMORY_UTILIZATION=0.90
+```
+
+Poi riavvia il server Qwen. Non è necessario cambiare il frontend o il backend DarkGPT.
