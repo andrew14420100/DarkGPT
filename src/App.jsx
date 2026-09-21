@@ -25,7 +25,6 @@ import {
   X,
 } from 'lucide-react';
 
-const APP_NAME = 'DarkGPT';
 const STORAGE_ACCOUNTS = 'darkgpt_accounts_v1';
 const STORAGE_SESSION = 'darkgpt_session_v1';
 
@@ -54,6 +53,10 @@ function initials(name = '') {
     .slice(0, 2)
     .map((part) => part[0].toUpperCase())
     .join('') || 'U';
+}
+
+function nowTime() {
+  return new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
 }
 
 function NavItem({ icon: Icon, label, active, onClick }) {
@@ -224,8 +227,10 @@ function Workspace({ user, onLogout }) {
   const [showTaskInput, setShowTaskInput] = useState(false);
   const [toast, setToast] = useState('');
   const [micActive, setMicActive] = useState(false);
+  const [isGenerating, setIsGenerating] = useState(false);
   const micStream = useRef(null);
   const fileInputRef = useRef(null);
+  const conversationRef = useRef(null);
 
   const currentSession = useMemo(() => sessions.find((session) => session.id === currentId) ?? null, [sessions, currentId]);
   const sessionMessages = currentSession?.messages ?? [];
@@ -246,6 +251,11 @@ function Workspace({ user, onLogout }) {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    const element = conversationRef.current;
+    if (element) element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+  }, [sessionMessages]);
+
   const updateCurrent = (updater) => {
     if (!currentId) return;
     setSessions((items) => items.map((session) => session.id === currentId ? updater(session) : session));
@@ -261,29 +271,87 @@ function Workspace({ user, onLogout }) {
     setToast('Nuova sessione creata');
   };
 
-  const ensureSession = () => {
-    if (currentSession) return currentSession.id;
-    const id = `session-${Date.now()}`;
-    const session = { id, title: 'Nuova chat', messages: [], files: [], tasks: [], createdAt: Date.now() };
-    setSessions((items) => [session, ...items]);
-    setCurrentId(id);
-    return id;
-  };
+  const ensureSessionId = () => currentSession?.id ?? `session-${Date.now()}`;
 
-  const sendMessage = () => {
+  const sendMessage = async () => {
     const value = message.trim();
-    if (!value) return;
-    const id = ensureSession();
-    setSessions((items) => items.map((session) => {
-      if (session.id !== id) return session;
-      const firstMessage = session.messages.length === 0;
-      return {
+    if (!value || isGenerating) return;
+
+    const id = ensureSessionId();
+    const assistantId = `assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const userMessage = { id: `user-${Date.now()}`, role: 'user', text: value, time: nowTime() };
+    const assistantMessage = { id: assistantId, role: 'assistant', text: '', time: nowTime() };
+    const previousMessages = currentSession?.messages ?? [];
+    const firstMessage = previousMessages.length === 0;
+
+    setSessions((items) => {
+      const existing = items.find((session) => session.id === id);
+      if (!existing) {
+        return [{
+          id,
+          title: value.slice(0, 38) + (value.length > 38 ? '…' : ''),
+          messages: [userMessage, assistantMessage],
+          files: [],
+          tasks: [],
+          createdAt: Date.now(),
+        }, ...items];
+      }
+      return items.map((session) => session.id === id ? {
         ...session,
         title: firstMessage ? value.slice(0, 38) + (value.length > 38 ? '…' : '') : session.title,
-        messages: [...session.messages, { id: `msg-${Date.now()}`, role: 'user', text: value, time: new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) }],
-      };
-    }));
+        messages: [...session.messages, userMessage, assistantMessage],
+      } : session);
+    });
+
+    setCurrentId(id);
     setMessage('');
+    setIsGenerating(true);
+
+    const apiMessages = [...previousMessages, userMessage]
+      .filter((entry) => entry.role === 'user' || entry.role === 'assistant')
+      .map((entry) => ({ role: entry.role, content: entry.text }));
+
+    try {
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ messages: apiMessages }),
+      });
+
+      if (!response.ok || !response.body) {
+        const details = await response.text().catch(() => '');
+        throw new Error(details || `HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let answer = '';
+
+      while (true) {
+        const { done, value: chunk } = await reader.read();
+        if (done) break;
+        answer += decoder.decode(chunk, { stream: true });
+        setSessions((items) => items.map((session) => session.id === id ? {
+          ...session,
+          messages: session.messages.map((entry) => entry.id === assistantId ? { ...entry, text: answer } : entry),
+        } : session));
+      }
+
+      answer += decoder.decode();
+      if (!answer.trim()) throw new Error('Risposta vuota dal modello');
+    } catch (error) {
+      console.error('DarkGPT/Qwen error:', error);
+      setSessions((items) => items.map((session) => session.id === id ? {
+        ...session,
+        messages: session.messages.map((entry) => entry.id === assistantId ? {
+          ...entry,
+          text: 'Non riesco a contattare il motore Qwen3.8-27B. Verifica che il backend DarkGPT e il server del modello siano avviati.',
+          error: true,
+        } : entry),
+      } : session));
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   const handleKeyDown = (event) => {
@@ -295,9 +363,14 @@ function Workspace({ user, onLogout }) {
 
   const attachFiles = (files) => {
     if (!files?.length) return;
-    const id = ensureSession();
+    const id = currentSession?.id ?? `session-${Date.now()}`;
     const mapped = Array.from(files).map((file) => ({ id: `${file.name}-${file.lastModified}`, name: file.name, size: file.size, type: file.type || 'file' }));
-    setSessions((items) => items.map((session) => session.id === id ? { ...session, files: [...session.files, ...mapped.filter((file) => !session.files.some((saved) => saved.id === file.id))] } : session));
+    setSessions((items) => {
+      const existing = items.find((session) => session.id === id);
+      if (!existing) return [{ id, title: 'Nuova chat', messages: [], files: mapped, tasks: [], createdAt: Date.now() }, ...items];
+      return items.map((session) => session.id === id ? { ...session, files: [...session.files, ...mapped.filter((file) => !session.files.some((saved) => saved.id === file.id))] } : session);
+    });
+    setCurrentId(id);
     setToast(mapped.length === 1 ? 'File allegato' : `${mapped.length} file allegati`);
   };
 
@@ -321,9 +394,8 @@ function Workspace({ user, onLogout }) {
 
   const addTask = () => {
     const value = taskDraft.trim();
-    if (!value) return;
-    const id = ensureSession();
-    setSessions((items) => items.map((session) => session.id === id ? { ...session, tasks: [...session.tasks, { id: `task-${Date.now()}`, title: value, done: false }] } : session));
+    if (!value || !currentId) return;
+    updateCurrent((session) => ({ ...session, tasks: [...session.tasks, { id: `task-${Date.now()}`, title: value, done: false }] }));
     setTaskDraft('');
     setShowTaskInput(false);
   };
@@ -331,7 +403,7 @@ function Workspace({ user, onLogout }) {
   const toggleTask = (taskId) => updateCurrent((session) => ({ ...session, tasks: session.tasks.map((task) => task.id === taskId ? { ...task, done: !task.done } : task) }));
 
   const deleteCurrentSession = () => {
-    if (!currentId) return;
+    if (!currentId || isGenerating) return;
     const next = sessions.filter((session) => session.id !== currentId);
     setSessions(next);
     setCurrentId(next[0]?.id ?? null);
@@ -352,6 +424,26 @@ function Workspace({ user, onLogout }) {
     setShowProfile(false);
   };
 
+  const renderMessage = (entry) => {
+    if (entry.role === 'assistant') {
+      return (
+        <div className="assistant-row" key={entry.id}>
+          <BrandOrb small />
+          <article className={`assistant-card ${entry.error ? 'assistant-card--error' : ''}`}>
+            <div className="assistant-meta"><strong>DarkGPT</strong><span>{entry.time}</span></div>
+            {entry.text ? <p className="assistant-message-text">{entry.text}</p> : <div className="typing-dots" aria-label="DarkGPT sta rispondendo"><span /><span /><span /></div>}
+          </article>
+        </div>
+      );
+    }
+    return (
+      <div className="user-message-row sent-message" key={entry.id}>
+        <div className="user-message"><p>{entry.text}</p><span className="message-time">{entry.time}</span></div>
+        <span className="user-mini">{initials(user.name)}</span>
+      </div>
+    );
+  };
+
   const renderChat = () => (
     <>
       <header className="workspace-header">
@@ -367,7 +459,7 @@ function Workspace({ user, onLogout }) {
         <div className="header-actions">
           <div className="popover-anchor">
             <button className="model-switcher" type="button" onClick={() => setShowModel((value) => !value)}><BrainCircuit size={19} /><span>DarkGPT Pro</span><ChevronDown size={16} /></button>
-            {showModel && <div className="small-popover model-popover"><strong>DarkGPT Pro</strong><small>Modello selezionato</small></div>}
+            {showModel && <div className="small-popover model-popover"><strong>DarkGPT Pro</strong><small>Qwen3.8-27B</small></div>}
           </div>
           <button className="icon-button" type="button" aria-label="Invita persona" onClick={() => setShowInvite(true)}><UserPlus size={18} /></button>
           <div className="popover-anchor">
@@ -392,26 +484,19 @@ function Workspace({ user, onLogout }) {
         )}
       </div>
 
-      <section className={`conversation ${sessionMessages.length === 0 ? 'conversation--empty' : ''}`} aria-label="Conversazione">
+      <section ref={conversationRef} className={`conversation ${sessionMessages.length === 0 ? 'conversation--empty' : ''}`} aria-label="Conversazione">
         {sessionMessages.length === 0 ? (
           <div className="chat-empty">
             <BrandOrb />
             <h2>Come posso aiutarti?</h2>
             <p>Questa conversazione è vuota. Scrivi tu il primo messaggio.</p>
           </div>
-        ) : (
-          sessionMessages.map((entry) => (
-            <div className="user-message-row sent-message" key={entry.id}>
-              <div className="user-message"><p>{entry.text}</p><span className="message-time">{entry.time}</span></div>
-              <span className="user-mini">{initials(user.name)}</span>
-            </div>
-          ))
-        )}
+        ) : sessionMessages.map(renderMessage)}
       </section>
 
       <div className="composer-wrap">
         <div className={`composer ${micActive ? 'composer--mic' : ''}`}>
-          <textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={handleKeyDown} placeholder="Scrivi un messaggio a DarkGPT..." rows={2} />
+          <textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={handleKeyDown} placeholder="Scrivi un messaggio a DarkGPT..." rows={2} disabled={isGenerating} />
           <div className="composer-bottom">
             <div className="composer-tools">
               <button type="button" className="tool-icon" aria-label="Allega" onClick={() => fileInputRef.current?.click()}><Paperclip size={19} /></button>
@@ -422,7 +507,7 @@ function Workspace({ user, onLogout }) {
             </div>
             <div className="composer-actions">
               <button type="button" className={`tool-icon ${micActive ? 'active mic-pulse' : ''}`} aria-label="Microfono" onClick={toggleMic}><Mic size={19} /></button>
-              <button className="send-button" type="button" onClick={sendMessage} disabled={!message.trim()}><span>Invia</span><Send size={18} /></button>
+              <button className="send-button" type="button" onClick={sendMessage} disabled={!message.trim() || isGenerating}><span>{isGenerating ? 'Risponde…' : 'Invia'}</span><Send size={18} /></button>
             </div>
           </div>
         </div>
@@ -435,7 +520,7 @@ function Workspace({ user, onLogout }) {
     <main className="app-shell">
       <aside className="left-sidebar">
         <div className="brand-block"><div className="brand-row"><BrandOrb /><div><div className="brand-name">Dark<span>GPT</span></div><div className="brand-tagline">Pensiero più profondo.<br />Risultati più reali.</div></div></div></div>
-        <button className="new-session" type="button" onClick={createSession}><Plus size={22} /><span>Nuova sessione</span></button>
+        <button className="new-session" type="button" onClick={createSession} disabled={isGenerating}><Plus size={22} /><span>Nuova sessione</span></button>
 
         <nav className="primary-nav" aria-label="Navigazione principale">
           <NavItem icon={Sparkles} label="Chat" active={activeNav === 'Chat'} onClick={() => handleNav('Chat')} />
@@ -448,7 +533,7 @@ function Workspace({ user, onLogout }) {
           <div className="section-kicker">RECENTI</div>
           <div className="recent-list">
             {sessions.length === 0 ? <div className="recent-empty">Nessuna conversazione</div> : sessions.map((session) => (
-              <button className={`recent-item ${session.id === currentId ? 'recent-item--active' : ''}`} key={session.id} type="button" onClick={() => { setCurrentId(session.id); setActiveNav('Chat'); }}>
+              <button className={`recent-item ${session.id === currentId ? 'recent-item--active' : ''}`} key={session.id} type="button" disabled={isGenerating} onClick={() => { setCurrentId(session.id); setActiveNav('Chat'); }}>
                 <FileText size={15} /><span>{session.title}</span>
               </button>
             ))}
@@ -480,7 +565,7 @@ function Workspace({ user, onLogout }) {
             <>
               <section className="side-card context-card">
                 <div className="side-card-title"><span><Activity size={18} />Contesto</span></div>
-                {sessionMessages.length ? <p>{sessionMessages[0].text}</p> : <div className="side-empty">Il contesto apparirà dopo il tuo primo messaggio.</div>}
+                {sessionMessages.length ? <p>{sessionMessages.find((entry) => entry.role === 'user')?.text || ''}</p> : <div className="side-empty">Il contesto apparirà dopo il tuo primo messaggio.</div>}
               </section>
               <section className="side-card">
                 <div className="side-card-title"><span><BookOpen size={18} />Fonti</span><button type="button" onClick={() => fileInputRef.current?.click()}>+ Aggiungi</button></div>
