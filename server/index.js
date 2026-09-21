@@ -7,9 +7,13 @@ import fs from 'node:fs';
 
 const app = express();
 const PORT = Number(process.env.PORT || 3001);
-const QWEN_BASE_URL = (process.env.QWEN_BASE_URL || 'http://127.0.0.1:8000/v1').replace(/\/$/, '');
-const QWEN_MODEL = process.env.QWEN_MODEL || 'Qwen/Qwen3.8-27B';
-const QWEN_API_KEY = process.env.QWEN_API_KEY || '';
+const AI_BASE_URL = (
+  process.env.GROQ_BASE_URL ||
+  process.env.QWEN_BASE_URL ||
+  'https://api.groq.com/openai/v1'
+).replace(/\/$/, '');
+const AI_MODEL = process.env.GROQ_MODEL || process.env.QWEN_MODEL || 'qwen/qwen3.8-27b';
+const AI_API_KEY = process.env.GROQ_API_KEY || process.env.QWEN_API_KEY || '';
 const SYSTEM_PROMPT = process.env.DARKGPT_SYSTEM_PROMPT || [
   'You are DarkGPT, a capable general-purpose AI assistant powered by Qwen3.8-27B.',
   'Reply in the same language as the user unless they ask otherwise.',
@@ -36,15 +40,24 @@ app.post('/api/chat', async (req, res) => {
     return res.status(400).json({ error: 'messages must contain at least one user message' });
   }
 
-  const headers = { 'Content-Type': 'application/json' };
-  if (QWEN_API_KEY) headers.Authorization = `Bearer ${QWEN_API_KEY}`;
+  if (!AI_API_KEY) {
+    return res.status(503).json({
+      error: 'DarkGPT inference provider is not configured',
+      hint: 'Set GROQ_API_KEY on the server',
+    });
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${AI_API_KEY}`,
+  };
 
   try {
-    const upstream = await fetch(`${QWEN_BASE_URL}/chat/completions`, {
+    const upstream = await fetch(`${AI_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        model: QWEN_MODEL,
+        model: AI_MODEL,
         messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
         stream: true,
         temperature: 0.7,
@@ -54,8 +67,8 @@ app.post('/api/chat', async (req, res) => {
 
     if (!upstream.ok || !upstream.body) {
       const details = await upstream.text().catch(() => '');
-      console.error('Qwen upstream error:', upstream.status, details);
-      return res.status(502).json({ error: 'Qwen server unavailable', status: upstream.status });
+      console.error('AI upstream error:', upstream.status, details);
+      return res.status(502).json({ error: 'AI provider unavailable', status: upstream.status });
     }
 
     res.status(200);
@@ -117,7 +130,7 @@ if (fs.existsSync(distPath)) {
 }
 
 app.listen(PORT, () => {
-  console.log(`DarkGPT backend listening on http://localhost:${PORT}`);
-  console.log(`Qwen endpoint: ${QWEN_BASE_URL}`);
-  console.log(`Model: ${QWEN_MODEL}`);
+  console.log(`DarkGPT backend listening on port ${PORT}`);
+  console.log(`AI endpoint: ${AI_BASE_URL}`);
+  console.log(`Model: ${AI_MODEL}`);
 });
